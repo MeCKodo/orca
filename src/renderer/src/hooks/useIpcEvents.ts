@@ -252,6 +252,12 @@ function getVisibleWorktreeIdsForRepo(state: AppState, repoId: string): Set<stri
   return new Set((state.worktreesByRepo[repoId] ?? []).map((worktree) => worktree.id))
 }
 
+function focusTerminalInitiatedTab(tabId: string, leafId?: string | null): void {
+  if (!focusRuntimeTerminalSurface(tabId, leafId)) {
+    focusTerminalTabSurface(tabId, leafId)
+  }
+}
+
 function activateTerminalInitiatedWorktree(store: AppState, worktreeId: string): void {
   store.setActiveView('terminal')
   store.setActiveWorktree(worktreeId)
@@ -260,12 +266,6 @@ function activateTerminalInitiatedWorktree(store: AppState, worktreeId: string):
   store.markWorktreeVisited(worktreeId)
   if (!store.isNavigatingHistory) {
     store.recordWorktreeVisit(worktreeId)
-  }
-}
-
-function focusTerminalInitiatedTab(tabId: string, leafId?: string | null): void {
-  if (!focusRuntimeTerminalSurface(tabId, leafId)) {
-    focusTerminalTabSurface(tabId, leafId)
   }
 }
 
