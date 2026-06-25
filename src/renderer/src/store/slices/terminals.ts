@@ -44,7 +44,10 @@ import {
   restorePtyDataHandlersAfterFailedShutdown,
   unregisterPtyDataHandlers
 } from '@/components/terminal-pane/pty-transport'
-import { normalizeTerminalLayoutSnapshot } from '@/components/terminal-pane/terminal-layout-leaf-ids'
+import {
+  normalizeTerminalLayoutSnapshot,
+  resolvePtyBoundActiveLeafId
+} from '@/components/terminal-pane/terminal-layout-leaf-ids'
 import { shutdownBufferCaptures } from '@/components/terminal-pane/shutdown-buffer-captures'
 import { callRuntimeRpc } from '@/runtime/runtime-rpc-client'
 import { parseRemoteRuntimePtyId } from '@/runtime/runtime-terminal-stream'
@@ -2780,7 +2783,17 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
               const tab = Object.values(tabsByWorktree)
                 .flat()
                 .find((entry) => entry.id === tabId)
-              return [tabId, tab ? sanitizeTerminalLayoutPaneTitles(normalized, tab) : normalized]
+              const sanitized = tab
+                ? sanitizeTerminalLayoutPaneTitles(normalized, tab)
+                : normalized
+              const activeLeafId = sanitized.root
+                ? resolvePtyBoundActiveLeafId({
+                    root: sanitized.root,
+                    activeLeafId: sanitized.activeLeafId,
+                    ptyIdsByLeafId: sanitized.ptyIdsByLeafId
+                  })
+                : sanitized.activeLeafId
+              return [tabId, { ...sanitized, activeLeafId }]
             })
         )
       }

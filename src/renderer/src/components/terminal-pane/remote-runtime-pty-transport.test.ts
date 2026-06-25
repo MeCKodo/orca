@@ -123,6 +123,7 @@ describe('createRemoteRuntimePtyTransport', () => {
 
   beforeEach(() => {
     vi.resetModules()
+    vi.doUnmock('../../runtime/remote-runtime-terminal-multiplexer')
     vi.clearAllMocks()
     subscriptionCallbacks = null
     subscriptionSendBinary.mockReset()
@@ -339,6 +340,61 @@ describe('createRemoteRuntimePtyTransport', () => {
     expect(onPtyExit).toHaveBeenCalledWith('remote:env-1@@terminal-new')
     expect(transport.getPtyId()).toBeNull()
     expect(transport.isConnected()).toBe(false)
+  })
+
+  it('ignores stale attach subscription rejection after reattaching a newer remote terminal', async () => {
+    let rejectOldSubscription: ((error: Error) => void) | null = null
+    const newStream = {
+      streamId: 2,
+      sendInput: vi.fn(() => true),
+      resize: vi.fn(() => true),
+      serializeBuffer: vi.fn(async () => null),
+      close: vi.fn()
+    }
+    const subscribeTerminal = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectOldSubscription = reject
+          })
+      )
+      .mockResolvedValueOnce(newStream)
+    vi.doMock('../../runtime/remote-runtime-terminal-multiplexer', () => ({
+      getRemoteRuntimeTerminalMultiplexer: vi.fn(() => ({ subscribeTerminal }))
+    }))
+    const { createRemoteRuntimePtyTransport } = await import('./remote-runtime-pty-transport')
+    const onError = vi.fn()
+    const onPtyExit = vi.fn()
+    const transport = createRemoteRuntimePtyTransport('env-1', {
+      worktreeId: 'wt-1',
+      tabId: 'tab-1',
+      leafId: 'pane:1',
+      onPtyExit
+    })
+
+    transport.attach({
+      existingPtyId: 'remote:env-1@@terminal-old',
+      cols: 80,
+      rows: 24,
+      callbacks: { onError }
+    })
+    transport.attach({
+      existingPtyId: 'remote:env-1@@terminal-new',
+      cols: 80,
+      rows: 24,
+      callbacks: { onError }
+    })
+    await vi.waitFor(() => expect(subscribeTerminal).toHaveBeenCalledTimes(2))
+
+    rejectOldSubscription?.(new Error('terminal_handle_stale'))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(onError).not.toHaveBeenCalled()
+    expect(onPtyExit).not.toHaveBeenCalled()
+    expect(transport.getPtyId()).toBe('remote:env-1@@terminal-new')
+    expect(transport.isConnected()).toBe(true)
   })
 
   it('does not send queued input through a stale stream during remote handle replacement', async () => {

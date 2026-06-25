@@ -506,6 +506,9 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
     // channel. Route it through onReplayData so the renderer engages the
     // replay guard and xterm auto-replies do not leak into the shell.
     ptyReplayHandlers.set(id, (data) => {
+      if (ptyId !== id) {
+        return
+      }
       if (storedCallbacks.onReplayData) {
         storedCallbacks.onReplayData(data)
       } else {
@@ -513,6 +516,9 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
       }
     })
     const dataHandler = (data: string, meta?: PtyDataMeta): void => {
+      if (ptyId !== id) {
+        return
+      }
       outputProcessor.processData(
         data,
         storedCallbacks,

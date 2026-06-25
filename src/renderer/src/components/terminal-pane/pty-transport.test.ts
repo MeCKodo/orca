@@ -18,6 +18,7 @@ import { CLIPBOARD_TEXT_MEASURE_YIELD_CODE_UNITS } from '../../../../shared/clip
 describe('createIpcPtyTransport', () => {
   const originalWindow = (globalThis as { window?: typeof window }).window
   let onData: ((payload: { id: string; data: string }) => void) | null = null
+  let onReplay: ((payload: { id: string; data: string }) => void) | null = null
   let onExit: ((payload: { id: string; code: number }) => void) | null = null
 
   function flushPtySideEffects(): Promise<void> {
@@ -27,6 +28,7 @@ describe('createIpcPtyTransport', () => {
   beforeEach(() => {
     vi.resetModules()
     onData = null
+    onReplay = null
     onExit = null
 
     ;(globalThis as { window: typeof window }).window = {
@@ -44,7 +46,10 @@ describe('createIpcPtyTransport', () => {
             onData = callback
             return () => {}
           }),
-          onReplay: vi.fn(() => () => {}),
+          onReplay: vi.fn((callback: (payload: { id: string; data: string }) => void) => {
+            onReplay = callback
+            return () => {}
+          }),
           onExit: vi.fn((callback: (payload: { id: string; code: number }) => void) => {
             onExit = callback
             return () => {}
@@ -99,6 +104,37 @@ describe('createIpcPtyTransport', () => {
     expect(onPtyExit).toHaveBeenCalledWith('pty-new')
     expect(transport.getPtyId()).toBeNull()
     expect(transport.isConnected()).toBe(false)
+  })
+
+  it('ignores stale data and replay for a previous PTY after reconnecting the same transport', async () => {
+    const { createIpcPtyTransport } = await import('./pty-transport')
+    const spawn = window.api.pty.spawn as unknown as ReturnType<typeof vi.fn>
+    const onDataCallback = vi.fn()
+    const onReplayData = vi.fn()
+    spawn.mockResolvedValueOnce({ id: 'pty-old' }).mockResolvedValueOnce({ id: 'pty-new' })
+
+    const transport = createIpcPtyTransport({})
+
+    await transport.connect({
+      url: '',
+      callbacks: { onData: vi.fn(), onReplayData: vi.fn() }
+    })
+    await transport.connect({
+      url: '',
+      callbacks: { onData: onDataCallback, onReplayData }
+    })
+
+    onData?.({ id: 'pty-old', data: 'old data' })
+    onReplay?.({ id: 'pty-old', data: 'old replay' })
+
+    expect(onDataCallback).not.toHaveBeenCalled()
+    expect(onReplayData).not.toHaveBeenCalled()
+
+    onData?.({ id: 'pty-new', data: 'new data' })
+    onReplay?.({ id: 'pty-new', data: 'new replay' })
+
+    expect(onDataCallback).toHaveBeenCalledWith('new data')
+    expect(onReplayData).toHaveBeenCalledWith('new replay')
   })
 
   it('exposes the connection identity captured at transport creation', async () => {

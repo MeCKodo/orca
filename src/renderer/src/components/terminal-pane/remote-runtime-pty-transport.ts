@@ -315,6 +315,16 @@ export function createRemoteRuntimePtyTransport(
     multiplexedStreamHandle = null
   }
 
+  function isCurrentRemoteTerminal(targetHandle: string, targetPtyId: string | null): boolean {
+    return (
+      !destroyed &&
+      connected &&
+      handle === targetHandle &&
+      remotePtyId === targetPtyId &&
+      targetPtyId !== null
+    )
+  }
+
   function retireRemoteTerminalId(): void {
     connected = false
     const stalePtyId = remotePtyId
@@ -345,11 +355,7 @@ export function createRemoteRuntimePtyTransport(
     const subscribedHandle = handle
     const subscribedPtyId = remotePtyId
     const isCurrentSubscription = (): boolean =>
-      !destroyed &&
-      connected &&
-      handle === subscribedHandle &&
-      remotePtyId === subscribedPtyId &&
-      subscribedPtyId !== null
+      isCurrentRemoteTerminal(subscribedHandle, subscribedPtyId)
     const nextStream = await getRemoteRuntimeTerminalMultiplexer(
       currentRuntimeEnvironmentId
     ).subscribeTerminal({
@@ -418,8 +424,14 @@ export function createRemoteRuntimePtyTransport(
             return
           }
           resubscribing = true
+          const resubscribeHandle = handle
+          const resubscribePtyId = remotePtyId
           void subscribeToHandle()
-            .catch((error) => handleRemoteTerminalError(error))
+            .catch((error) => {
+              if (isCurrentRemoteTerminal(resubscribeHandle, resubscribePtyId)) {
+                handleRemoteTerminalError(error)
+              }
+            })
             .finally(() => {
               resubscribing = false
             })
@@ -510,7 +522,11 @@ export function createRemoteRuntimePtyTransport(
         rows: options.rows ?? 24
       }
       const targetHandle = handle
+      const targetPtyId = remotePtyId
       void subscribeToHandle().catch((error) => {
+        if (!isCurrentRemoteTerminal(targetHandle, targetPtyId)) {
+          return
+        }
         if (handle === targetHandle && multiplexedStreamHandle !== targetHandle) {
           closeMultiplexedStream()
         }

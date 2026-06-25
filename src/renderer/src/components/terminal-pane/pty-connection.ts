@@ -1288,6 +1288,35 @@ export function connectPanePty(
     }
   })
 
+  const focusSurvivingPtyPaneAfterKeptExit = (): void => {
+    if (manager.getActivePane()?.id !== pane.id) {
+      return
+    }
+    const hasPtyBinding = (paneId: number): boolean =>
+      Boolean(deps.paneTransportsRef.current.get(paneId)?.getPtyId())
+    const repairedActiveLeafId =
+      useAppStore.getState().terminalLayoutsByTabId[deps.tabId]?.activeLeafId ?? null
+    const repairedActivePaneId = repairedActiveLeafId
+      ? manager.getNumericIdForLeaf(repairedActiveLeafId)
+      : null
+    const targetPaneId =
+      repairedActivePaneId !== null &&
+      repairedActivePaneId !== pane.id &&
+      hasPtyBinding(repairedActivePaneId)
+        ? repairedActivePaneId
+        : (manager
+            .getPanes()
+            .find((candidate) => candidate.id !== pane.id && hasPtyBinding(candidate.id))?.id ??
+          null)
+    if (targetPaneId !== null) {
+      // Why: when a newborn split PTY dies before output/input, the pane stays
+      // mounted for diagnostics; move live focus to the sibling that still owns a PTY.
+      manager.setActivePane(targetPaneId, {
+        focus: deps.isActiveRef.current && deps.isVisibleRef.current
+      })
+    }
+  }
+
   const onExit = (ptyId: string): void => {
     const currentPaneTransport = deps.paneTransportsRef.current.get(pane.id)
     if (currentPaneTransport && currentPaneTransport !== transport) {
@@ -1341,6 +1370,7 @@ export function connectPanePty(
     ) {
       // Why: a freshly split pane can lose its newborn PTY during setup; keep
       // the split visible so the failed session does not immediately collapse.
+      focusSurvivingPtyPaneAfterKeptExit()
       return
     }
     manager.closePane(pane.id)

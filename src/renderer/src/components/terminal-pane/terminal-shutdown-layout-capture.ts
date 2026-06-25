@@ -105,6 +105,7 @@ export function captureTerminalShutdownLayout({
   const ptyEntries = panes
     .map((pane) => [pane.leafId, paneTransports.get(pane.id)?.getPtyId() ?? null] as const)
     .filter((entry): entry is readonly [ShutdownPane['leafId'], string] => entry[1] !== null)
+  const livePtyIdsByLeafId = Object.fromEntries(ptyEntries)
 
   const mergedBuffers = captureBuffers
     ? mergeCapturedLeafState({
@@ -118,17 +119,14 @@ export function captureTerminalShutdownLayout({
     fresh: {},
     currentLeafIds
   })
-  const mergedPtyIds = mergeCapturedLeafState({
-    prior: existingLayout?.ptyIdsByLeafId,
-    fresh: Object.fromEntries(ptyEntries),
-    currentLeafIds
-  })
+  const mergedPtyIds = livePtyIdsByLeafId
   // Why: shutdown snapshots can otherwise persist focus on a mounted pane whose
-  // transport was already cleared during PTY exit/reconnect cleanup.
+  // transport was already cleared during PTY exit/reconnect cleanup. Unlike
+  // scrollback, PTY bindings are live ownership and must not preserve stale ids.
   layout.activeLeafId = resolvePtyBoundActiveLeafId({
     root: layout.root,
     activeLeafId: layout.activeLeafId,
-    ptyIdsByLeafId: mergedPtyIds
+    ptyIdsByLeafId: livePtyIdsByLeafId
   })
   if (Object.keys(mergedBuffers).length > 0) {
     layout.buffersByLeafId = mergedBuffers

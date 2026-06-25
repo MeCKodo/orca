@@ -349,19 +349,29 @@ function createPane(paneId: number) {
   }
 }
 
-function createManager(paneCount = 1) {
+function createManager(paneCount = 1, initialActivePaneId: number | null = null) {
+  let activePaneId = initialActivePaneId
+  const panes = Array.from({ length: paneCount }, (_, index) => ({
+    id: index + 1,
+    leafId: leafIdForPane(index + 1)
+  }))
   return {
     setPaneGpuRendering: vi.fn(),
     markPaneHasComplexScriptOutput: vi.fn(),
     rebuildPaneWebgl: vi.fn(),
-    getPanes: vi.fn(() =>
-      Array.from({ length: paneCount }, (_, index) => ({
-        id: index + 1,
-        leafId: leafIdForPane(index + 1)
-      }))
-    ),
+    getPanes: vi.fn(() => panes),
     closePane: vi.fn(),
-    getActivePane: vi.fn<() => { id: number } | null>(() => null)
+    getActivePane: vi.fn<() => { id: number; leafId?: string } | null>(() =>
+      activePaneId === null
+        ? null
+        : (panes.find((candidate) => candidate.id === activePaneId) ?? null)
+    ),
+    getNumericIdForLeaf: vi.fn((leafId: string) => {
+      return panes.find((candidate) => candidate.leafId === leafId)?.id ?? null
+    }),
+    setActivePane: vi.fn((paneId: number) => {
+      activePaneId = paneId
+    })
   }
 }
 
@@ -821,10 +831,30 @@ describe('connectPanePty', () => {
     const { connectPanePty } = await import('./pty-connection')
     const transport = createMockTransport('pty-pane-2')
     transportFactoryQueue.push(transport)
-    const manager = createManager(2)
+    const manager = createManager(2, 2)
     const deps = createDeps({
       restoredLeafId: LEAF_2,
-      paneTransportsRef: { current: new Map([[1, createMockTransport('pty-pane-1')]]) }
+      paneTransportsRef: { current: new Map([[1, createMockTransport('pty-pane-1')]]) },
+      clearExitedPanePtyLayoutBinding: vi.fn(() => {
+        mockStoreState = {
+          ...mockStoreState,
+          terminalLayoutsByTabId: {
+            ...mockStoreState.terminalLayoutsByTabId,
+            'tab-1': {
+              root: {
+                type: 'split',
+                direction: 'horizontal',
+                first: { type: 'leaf', leafId: LEAF_1 },
+                second: { type: 'leaf', leafId: LEAF_2 },
+                ratio: 0.5
+              },
+              activeLeafId: LEAF_1,
+              expandedLeafId: null,
+              ptyIdsByLeafId: { [LEAF_1]: 'pty-pane-1' }
+            }
+          }
+        }
+      })
     })
 
     connectPanePty(createPane(2) as never, manager as never, deps as never)
@@ -837,6 +867,7 @@ describe('connectPanePty', () => {
     expect(deps.clearTabPtyId).toHaveBeenCalledWith('tab-1', 'pty-pane-2')
     expect(deps.onPtyExitRef.current).not.toHaveBeenCalled()
     expect(manager.closePane).not.toHaveBeenCalled()
+    expect(manager.setActivePane).toHaveBeenCalledWith(1, { focus: true })
   })
 
   it('closes a split pane when an established PTY exits after output', async () => {
