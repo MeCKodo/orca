@@ -7780,7 +7780,7 @@ export class OrcaRuntimeService {
       return null
     }
     const parentTabId = firstSurface.parentTabId
-    const activeLeafId =
+    const requestedActiveLeafId =
       firstSurface.parentLayout?.activeLeafId ??
       surfaces.find((surface) => surface.isActive)?.leafId ??
       firstSurface.leafId
@@ -7788,6 +7788,15 @@ export class OrcaRuntimeService {
       type: 'leaf' as const,
       leafId: firstSurface.leafId
     }
+    const visibleLeafIds = this.collectVisibleTerminalLeafIds(root, parentTabId, summariesByLeafKey)
+    if (visibleLeafIds.length === 0) {
+      return null
+    }
+    const activeLeafId =
+      (requestedActiveLeafId && visibleLeafIds.includes(requestedActiveLeafId)
+        ? requestedActiveLeafId
+        : surfaces.find((surface) => surface.isActive && visibleLeafIds.includes(surface.leafId))
+            ?.leafId) ?? visibleLeafIds[0]!
     const panes = this.buildTerminalVisualPane(root, parentTabId, activeLeafId, summariesByLeafKey)
     if (!panes) {
       return null
@@ -7798,6 +7807,20 @@ export class OrcaRuntimeService {
       activeLeafId,
       panes
     }
+  }
+
+  private collectVisibleTerminalLeafIds(
+    node: TerminalPaneLayoutNode,
+    tabId: string,
+    summariesByLeafKey: ReadonlyMap<string, RuntimeTerminalSummary>
+  ): string[] {
+    if (node.type === 'leaf') {
+      return summariesByLeafKey.has(this.getLeafKey(tabId, node.leafId)) ? [node.leafId] : []
+    }
+    return [
+      ...this.collectVisibleTerminalLeafIds(node.first, tabId, summariesByLeafKey),
+      ...this.collectVisibleTerminalLeafIds(node.second, tabId, summariesByLeafKey)
+    ]
   }
 
   private buildTerminalVisualPane(

@@ -77,6 +77,30 @@ describe('createIpcPtyTransport', () => {
     transport.disconnect()
   })
 
+  it('ignores a stale exit for a previous PTY after reconnecting the same transport', async () => {
+    const { createIpcPtyTransport } = await import('./pty-transport')
+    const spawn = window.api.pty.spawn as unknown as ReturnType<typeof vi.fn>
+    const onPtyExit = vi.fn()
+    spawn.mockResolvedValueOnce({ id: 'pty-old' }).mockResolvedValueOnce({ id: 'pty-new' })
+
+    const transport = createIpcPtyTransport({ onPtyExit })
+
+    await transport.connect({ url: '', callbacks: {} })
+    await transport.connect({ url: '', callbacks: {} })
+
+    onExit?.({ id: 'pty-old', code: 0 })
+
+    expect(onPtyExit).not.toHaveBeenCalledWith('pty-old')
+    expect(transport.getPtyId()).toBe('pty-new')
+    expect(transport.isConnected()).toBe(true)
+
+    onExit?.({ id: 'pty-new', code: 0 })
+
+    expect(onPtyExit).toHaveBeenCalledWith('pty-new')
+    expect(transport.getPtyId()).toBeNull()
+    expect(transport.isConnected()).toBe(false)
+  })
+
   it('exposes the connection identity captured at transport creation', async () => {
     const { createIpcPtyTransport } = await import('./pty-transport')
 

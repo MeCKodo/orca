@@ -73,6 +73,7 @@ import {
 import { resolvePaneKeyForManager } from '@/lib/pane-manager/pane-key-resolution'
 import { safeFit } from '@/lib/pane-manager/pane-tree-ops'
 import { captureTerminalShutdownLayout } from './terminal-shutdown-layout-capture'
+import { resolvePtyBoundActiveLeafId } from './terminal-layout-leaf-ids'
 import {
   inspectRuntimeTerminalProcess,
   isRemoteRuntimePtyId
@@ -823,8 +824,8 @@ export default function TerminalPane({
     persistLayoutSnapshot()
   }, [paneCount, paneTitles, persistLayoutSnapshot, terminalTab])
 
-  const syncPanePtyLayoutBinding = useCallback(
-    (paneId: number, ptyId: string | null): void => {
+  const writePanePtyLayoutBinding = useCallback(
+    (paneId: number, ptyId: string | null, repairActiveLeafOnClear: boolean): void => {
       const existingLayout = useAppStore.getState().terminalLayoutsByTabId[tabId] ?? EMPTY_LAYOUT
       const { ptyIdsByLeafId: _existingPtyIdsByLeafId, ...layoutWithoutPtyBindings } =
         existingLayout
@@ -851,12 +852,41 @@ export default function TerminalPane({
 
       const nextBindings = { ...existingBindings }
       delete nextBindings[leafId]
-      setTabLayout(tabId, {
+      const nextLayout = {
         ...layoutWithoutPtyBindings,
         ...(Object.keys(nextBindings).length > 0 ? { ptyIdsByLeafId: nextBindings } : {})
-      })
+      }
+      if (
+        repairActiveLeafOnClear &&
+        existingLayout.activeLeafId === leafId &&
+        Object.keys(nextBindings).length > 0
+      ) {
+        // Why: an active pane that lost its PTY would keep swallowing input if
+        // sibling bound panes are available; replacement/restart bookkeeping
+        // opts out so focus stays with the pane about to receive a fresh PTY.
+        nextLayout.activeLeafId = resolvePtyBoundActiveLeafId({
+          root: nextLayout.root,
+          activeLeafId: nextLayout.activeLeafId,
+          ptyIdsByLeafId: nextBindings
+        })
+      }
+      setTabLayout(tabId, nextLayout)
     },
     [setTabLayout, tabId]
+  )
+
+  const syncPanePtyLayoutBinding = useCallback(
+    (paneId: number, ptyId: string | null): void => {
+      writePanePtyLayoutBinding(paneId, ptyId, false)
+    },
+    [writePanePtyLayoutBinding]
+  )
+
+  const clearExitedPanePtyLayoutBinding = useCallback(
+    (paneId: number): void => {
+      writePanePtyLayoutBinding(paneId, null, true)
+    },
+    [writePanePtyLayoutBinding]
   )
 
   const {
@@ -1031,6 +1061,7 @@ export default function TerminalPane({
     dispatchNotification,
     setCacheTimerStartedAt,
     syncPanePtyLayoutBinding,
+    clearExitedPanePtyLayoutBinding,
     setTabPaneExpanded,
     setTabCanExpandPane,
     setExpandedPane,
@@ -1106,11 +1137,13 @@ export default function TerminalPane({
       persistLayoutSnapshot()
     }
 
-    if (restoredLayout.activeLeafId) {
-      const activePaneId = manager.getNumericIdForLeaf(restoredLayout.activeLeafId)
-      if (activePaneId !== null) {
-        manager.setActivePane(activePaneId, { focus: isActive })
-      }
+    const activePaneId = restoredLayout.activeLeafId
+      ? manager.getNumericIdForLeaf(restoredLayout.activeLeafId)
+      : null
+    const fallbackActivePaneId = manager.getActivePane()?.id ?? manager.getPanes()[0]?.id ?? null
+    const nextActivePaneId = activePaneId ?? fallbackActivePaneId
+    if (nextActivePaneId !== null) {
+      manager.setActivePane(nextActivePaneId, { focus: isActive })
     }
   }, [isActive, paneCount, persistLayoutSnapshot, restoredLayout])
 
@@ -1248,13 +1281,15 @@ export default function TerminalPane({
         onShowSessionRestoredBanner: showRestoredSessionBanner,
         dispatchNotification,
         setCacheTimerStartedAt,
-        syncPanePtyLayoutBinding
+        syncPanePtyLayoutBinding,
+        clearExitedPanePtyLayoutBinding
       })
       panePtyBindingsRef.current.set(paneId, newPaneBinding)
       manager.setActivePane(paneId, { focus: true })
     },
     [
       clearCodexRestartNotice,
+      clearExitedPanePtyLayoutBinding,
       clearRuntimePaneTitle,
       clearTabPtyId,
       cwd,

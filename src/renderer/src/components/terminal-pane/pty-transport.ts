@@ -642,6 +642,12 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
 
   function registerPtyExitHandler(id: string): void {
     const exitHandler = (code: number): void => {
+      if (ptyId !== null && ptyId !== id) {
+        // Why: a preserved sleep/reconnect session can report its old exit
+        // after this transport has already rebound to a replacement PTY.
+        unregisterPtyHandlers(id)
+        return
+      }
       clearAccumulatedState()
       connected = false
       ptyId = null

@@ -4,6 +4,7 @@ import type { PtyTransport } from './pty-transport'
 import { flushTerminalOutput } from '@/lib/pane-manager/pane-terminal-output-scheduler'
 import { serializeTerminalLayout } from './layout-serialization'
 import { mergeCapturedLeafState } from './merge-captured-leaf-state'
+import { resolvePtyBoundActiveLeafId } from './terminal-layout-leaf-ids'
 import { TERMINAL_SCROLLBACK_SESSION_BUFFER_BYTE_LIMIT } from '../../../../shared/terminal-scrollback-limits'
 import { measureUtf8ByteLength } from '../../../../shared/utf8-byte-limits'
 
@@ -121,6 +122,13 @@ export function captureTerminalShutdownLayout({
     prior: existingLayout?.ptyIdsByLeafId,
     fresh: Object.fromEntries(ptyEntries),
     currentLeafIds
+  })
+  // Why: shutdown snapshots can otherwise persist focus on a mounted pane whose
+  // transport was already cleared during PTY exit/reconnect cleanup.
+  layout.activeLeafId = resolvePtyBoundActiveLeafId({
+    root: layout.root,
+    activeLeafId: layout.activeLeafId,
+    ptyIdsByLeafId: mergedPtyIds
   })
   if (Object.keys(mergedBuffers).length > 0) {
     layout.buffersByLeafId = mergedBuffers

@@ -1289,9 +1289,23 @@ export function connectPanePty(
   })
 
   const onExit = (ptyId: string): void => {
+    const currentPaneTransport = deps.paneTransportsRef.current.get(pane.id)
+    if (currentPaneTransport && currentPaneTransport !== transport) {
+      // Why: an old transport can deliver a late exit after this pane has
+      // rebound to a replacement PTY; only clear ownership for the exited id.
+      deps.clearTabPtyId(deps.tabId, ptyId)
+      deps.consumeSuppressedPtyExit(ptyId)
+      scheduleRuntimeGraphSync()
+      return
+    }
     agentCompletionCoordinator.dispose()
     clearPanePtyFitBinding()
-    deps.syncPanePtyLayoutBinding(pane.id, null)
+    const suppressedExit = deps.consumeSuppressedPtyExit(ptyId)
+    if (suppressedExit) {
+      deps.syncPanePtyLayoutBinding(pane.id, null)
+    } else {
+      deps.clearExitedPanePtyLayoutBinding(pane.id)
+    }
     deps.clearRuntimePaneTitle(deps.tabId, pane.id)
     deps.clearTabPtyId(deps.tabId, ptyId)
     // Why: if the PTY exits abruptly (Ctrl-D, crash, shell termination) without
@@ -1309,7 +1323,7 @@ export function connectPanePty(
     // pane stays mounted and can reconnect in place. Without consuming the
     // suppression here, split-pane Codex restarts would still close the pane
     // because this handler runs before the tab-level close logic sees the exit.
-    if (deps.consumeSuppressedPtyExit(ptyId)) {
+    if (suppressedExit) {
       manager.setPaneGpuRendering(pane.id, true)
       return
     }
