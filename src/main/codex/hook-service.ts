@@ -6,7 +6,7 @@ import type { AgentHookInstallState, AgentHookInstallStatus } from '../../shared
 import {
   buildManagedCommandHook,
   createManagedCommandMatcher,
-  buildWindowsAgentHookPostCommand,
+  buildWindowsAgentHookCurlPostCommand,
   getSharedManagedScriptPath,
   hookDefinitionHasManagedCommand,
   MANAGED_HOOK_TIMEOUT_SECONDS,
@@ -120,10 +120,20 @@ function getManagedScriptPath(): string {
   return getSharedManagedScriptPath(getManagedScriptFileName())
 }
 
+// Why: a Windows script path is cmd-safe when it holds only characters cmd.exe
+// passes through untouched (drive letter, backslash, dot, dash, underscore).
+// Codex runs hooks as `cmd.exe /C <command>` and forwards our string verbatim
+// when it has no spaces/quotes, so a bare path then launches with zero shell
+// startup. Spaces or cmd metacharacters (`% ^ & ! ( )` etc.) force the encoded
+// PowerShell launcher (#6078), which hides the path in base64. `~` is allowed
+// because 8.3 short paths (e.g. `RUNNER~1`) are cmd-safe and common.
+const WINDOWS_CMD_SAFE_PATH = /^[A-Za-z0-9_.:\\~-]+$/
+
 function getManagedCommand(scriptPath: string): string {
-  return process.platform === 'win32'
-    ? wrapWindowsHookCommand(scriptPath)
-    : wrapPosixHookCommand(scriptPath)
+  if (process.platform !== 'win32') {
+    return wrapPosixHookCommand(scriptPath)
+  }
+  return WINDOWS_CMD_SAFE_PATH.test(scriptPath) ? scriptPath : wrapWindowsHookCommand(scriptPath)
 }
 
 function getSystemConfigPath(): string {
@@ -464,6 +474,28 @@ function escapeRegex(value: string): string {
   return value.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+function buildHookTrustHeaderKeyPattern(key: string): string {
+  const keyVariants = [key]
+  const parsed = parseTrustKey(key)
+  if (parsed && /^[A-Za-z]:[\\/]|^\\\\/.test(parsed.sourcePath)) {
+    const suffix = `:${parsed.eventLabel}:${parsed.groupIndex}:${parsed.handlerIndex}`
+    keyVariants.push(
+      `${parsed.sourcePath.replace(/\\/g, '/')}${suffix}`,
+      `${parsed.sourcePath.replace(/\//g, '\\')}${suffix}`
+    )
+  }
+  const alternatives = [...new Set(keyVariants)].flatMap((variant) => {
+    const quoted = [`"${escapeRegex(escapeTomlString(variant))}"`]
+    if (!variant.includes("'")) {
+      // Why: tolerate raw-backslash literal keys left by Codex/manual approval
+      // while Orca repairs mirrored runtime trust across both Windows variants.
+      quoted.push(`'${escapeRegex(variant)}'`)
+    }
+    return quoted
+  })
+  return `(?:${alternatives.join('|')})`
+}
+
 function applyMirroredRuntimeUserHookTrustStates(
   tomlPath: string,
   entries: readonly MirroredRuntimeUserHookTrustEntry[]
@@ -475,9 +507,10 @@ function applyMirroredRuntimeUserHookTrustStates(
   const existing = readFileSync(tomlPath, 'utf-8')
   let updated = existing
   for (const { entry, enabled } of entries) {
-    const escapedKey = escapeRegex(escapeTomlString(computeTrustKey(entry)))
+    const headerKeyPattern = buildHookTrustHeaderKeyPattern(computeTrustKey(entry))
     const pattern = new RegExp(
-      `(\\[hooks\\.state\\."${escapedKey}"\\]\\r?\\n[ \\t]*enabled[ \\t]*=[ \\t]*)(true|false)`
+      `(\\[hooks\\.state\\.${headerKeyPattern}\\]\\r?\\n[ \\t]*enabled[ \\t]*=[ \\t]*)(true|false)`,
+      'g'
     )
     updated = updated.replace(pattern, `$1${enabled}`)
   }
@@ -632,9 +665,11 @@ function removeRuntimeManagedHookTrustEntries(configPath: string): void {
         // recognize (and clean up) its own managed trust entries.
         timeoutSec: MANAGED_HOOK_TIMEOUT_SECONDS
       }
-      const expectedHash = computeTrustedHash(expectedEntry)
-      const legacyHash = computeTrustedHash({ ...expectedEntry, timeoutSec: undefined })
-      if (state.trustedHash !== expectedHash && state.trustedHash !== legacyHash) {
+      const recognizedHashes = new Set([
+        computeTrustedHash(expectedEntry),
+        computeTrustedHash({ ...expectedEntry, timeoutSec: undefined })
+      ])
+      if (!state.trustedHash || !recognizedHashes.has(state.trustedHash)) {
         continue
       }
       ourKeys.push(key)
@@ -662,7 +697,7 @@ function getManagedScript(target: 'local' | 'posix' = 'local'): string {
       'if "%ORCA_AGENT_HOOK_PORT%"=="" exit /b 0',
       'if "%ORCA_AGENT_HOOK_TOKEN%"=="" exit /b 0',
       'if "%ORCA_PANE_KEY%"=="" exit /b 0',
-      buildWindowsAgentHookPostCommand('codex'),
+      buildWindowsAgentHookCurlPostCommand('codex'),
       'exit /b 0',
       ''
     ].join('\r\n')

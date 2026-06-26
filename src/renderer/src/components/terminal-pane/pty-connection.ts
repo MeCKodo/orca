@@ -1329,11 +1329,11 @@ export function connectPanePty(
     }
     agentCompletionCoordinator.dispose()
     clearPanePtyFitBinding()
-    const suppressedExit = deps.consumeSuppressedPtyExit(ptyId)
-    if (suppressedExit) {
+    const isSuppressedExit = deps.consumeSuppressedPtyExit(ptyId)
+    if (isSuppressedExit) {
       deps.syncPanePtyLayoutBinding(pane.id, null)
     } else {
-      deps.clearExitedPanePtyLayoutBinding(pane.id)
+      deps.clearExitedPanePtyLayoutBinding(pane.id, ptyId)
     }
     deps.clearRuntimePaneTitle(deps.tabId, pane.id)
     deps.clearTabPtyId(deps.tabId, ptyId)
@@ -1352,7 +1352,7 @@ export function connectPanePty(
     // pane stays mounted and can reconnect in place. Without consuming the
     // suppression here, split-pane Codex restarts would still close the pane
     // because this handler runs before the tab-level close logic sees the exit.
-    if (suppressedExit) {
+    if (isSuppressedExit) {
       manager.setPaneGpuRendering(pane.id, true)
       return
     }
@@ -3472,7 +3472,11 @@ export function connectPanePty(
         })
         // Why: a stale restored daemon/SSH session can fail reattach after the
         // pane is mounted. Do not leave xterm alive without a backing PTY.
-        deps.syncPanePtyLayoutBinding(pane.id, null)
+        if (staleSessionId) {
+          deps.clearExitedPanePtyLayoutBinding(pane.id, staleSessionId)
+        } else {
+          deps.syncPanePtyLayoutBinding(pane.id, null)
+        }
         if (staleSessionId) {
           deps.clearTabPtyId(deps.tabId, staleSessionId)
         }
@@ -3484,7 +3488,11 @@ export function connectPanePty(
         ...(coldRestoreStartup ? { launchAgent: coldRestoreStartup.agent } : {})
       })
       if (connectResult?.sessionExpired) {
-        deps.syncPanePtyLayoutBinding(pane.id, null)
+        if (staleSessionId) {
+          deps.clearExitedPanePtyLayoutBinding(pane.id, staleSessionId)
+        } else {
+          deps.syncPanePtyLayoutBinding(pane.id, null)
+        }
         if (staleSessionId) {
           deps.clearTabPtyId(deps.tabId, staleSessionId)
         }
@@ -3800,7 +3808,7 @@ export function connectPanePty(
                   if (disposed) {
                     return
                   }
-                  deps.syncPanePtyLayoutBinding(pane.id, null)
+                  deps.clearExitedPanePtyLayoutBinding(pane.id, pendingSessionId)
                   deps.clearTabPtyId(deps.tabId, pendingSessionId)
                   startFreshColdRestoreAgentResume(coldRestoreStartup)
                   return
@@ -3823,7 +3831,7 @@ export function connectPanePty(
                   return
                 }
                 if (isSshSessionExpiredError(err)) {
-                  deps.syncPanePtyLayoutBinding(pane.id, null)
+                  deps.clearExitedPanePtyLayoutBinding(pane.id, pendingSessionId)
                   deps.clearTabPtyId(deps.tabId, pendingSessionId)
                   startFreshColdRestoreAgentResume(coldRestoreStartup)
                   return
@@ -3969,7 +3977,7 @@ export function connectPanePty(
             if (disposed) {
               return
             }
-            deps.syncPanePtyLayoutBinding(pane.id, null)
+            deps.clearExitedPanePtyLayoutBinding(pane.id, deferredReattachSessionId)
             deps.clearTabPtyId(deps.tabId, deferredReattachSessionId)
             startFreshColdRestoreAgentResume(coldRestoreStartup)
             return
@@ -3996,7 +4004,7 @@ export function connectPanePty(
             ptyId: deferredReattachSessionId,
             reason: message
           })
-          deps.syncPanePtyLayoutBinding(pane.id, null)
+          deps.clearExitedPanePtyLayoutBinding(pane.id, deferredReattachSessionId)
           deps.clearTabPtyId(deps.tabId, deferredReattachSessionId)
           if (connectionId && isSshSessionExpiredError(err)) {
             startFreshColdRestoreAgentResume(coldRestoreStartup)

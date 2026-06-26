@@ -343,7 +343,9 @@ describe('createRemoteRuntimePtyTransport', () => {
   })
 
   it('ignores stale attach subscription rejection after reattaching a newer remote terminal', async () => {
-    let rejectOldSubscription: ((error: Error) => void) | null = null
+    let rejectOldSubscription: (error: Error) => void = () => {
+      throw new Error('old subscription reject was not captured')
+    }
     const newStream = {
       streamId: 2,
       sendInput: vi.fn(() => true),
@@ -387,7 +389,7 @@ describe('createRemoteRuntimePtyTransport', () => {
     })
     await vi.waitFor(() => expect(subscribeTerminal).toHaveBeenCalledTimes(2))
 
-    rejectOldSubscription?.(new Error('terminal_handle_stale'))
+    rejectOldSubscription(new Error('terminal_handle_stale'))
     await Promise.resolve()
     await Promise.resolve()
 

@@ -78,11 +78,59 @@ function getRemappedLeafId(
   return rewrite.nextLeafIdByInputLeafId.get(leafId) ?? null
 }
 
+function hasLeafPtyBinding(
+  ptyIdsByLeafId: Record<string, string> | undefined,
+  leafId: string
+): boolean {
+  return ptyIdsByLeafId ? Object.prototype.hasOwnProperty.call(ptyIdsByLeafId, leafId) : false
+}
+
+export function resolveTerminalLayoutActiveLeafId(opts: {
+  root: TerminalPaneLayoutNode | null | undefined
+  activeLeafId: string | null | undefined
+  ptyIdsByLeafId?: Record<string, string>
+}): string | null {
+  const leafIds = collectLeafIdsInOrder(opts.root)
+  if (leafIds.length === 0) {
+    return Object.keys(opts.ptyIdsByLeafId ?? {})[0] ?? opts.activeLeafId ?? null
+  }
+
+  const leafIdSet = new Set(leafIds)
+  const activeLeafId = opts.activeLeafId ?? null
+  const hasBoundLeaf = leafIds.some((leafId) => hasLeafPtyBinding(opts.ptyIdsByLeafId, leafId))
+
+  if (
+    activeLeafId &&
+    leafIdSet.has(activeLeafId) &&
+    (!hasBoundLeaf || hasLeafPtyBinding(opts.ptyIdsByLeafId, activeLeafId))
+  ) {
+    return activeLeafId
+  }
+
+  if (hasBoundLeaf) {
+    return leafIds.find((leafId) => hasLeafPtyBinding(opts.ptyIdsByLeafId, leafId)) ?? null
+  }
+
+  return activeLeafId && leafIdSet.has(activeLeafId) ? activeLeafId : leafIds[0]
+}
+
 export function normalizeTerminalLayoutSnapshot(
   snapshot: TerminalLayoutSnapshot | null | undefined
 ): { snapshot: TerminalLayoutSnapshot; changed: boolean } {
   if (!snapshot?.root) {
-    return { snapshot: snapshot ?? EMPTY_TERMINAL_LAYOUT, changed: false }
+    const nextSnapshot = snapshot ?? EMPTY_TERMINAL_LAYOUT
+    const activeLeafId = resolveTerminalLayoutActiveLeafId({
+      root: nextSnapshot.root,
+      activeLeafId: nextSnapshot.activeLeafId,
+      ptyIdsByLeafId: nextSnapshot.ptyIdsByLeafId
+    })
+    return {
+      snapshot:
+        activeLeafId === nextSnapshot.activeLeafId
+          ? nextSnapshot
+          : { ...nextSnapshot, activeLeafId },
+      changed: activeLeafId !== nextSnapshot.activeLeafId
+    }
   }
   const counts = collectLeafCounts(snapshot.root)
   const duplicatedInputLeafIds = new Set(
@@ -103,21 +151,26 @@ export function normalizeTerminalLayoutSnapshot(
     }
   }
   const inputLeafIds = new Set(counts.keys())
-  const selectionChanged =
-    (snapshot.activeLeafId !== null &&
-      snapshot.activeLeafId !== undefined &&
-      !inputLeafIds.has(snapshot.activeLeafId)) ||
-    (snapshot.expandedLeafId !== null &&
-      snapshot.expandedLeafId !== undefined &&
-      !inputLeafIds.has(snapshot.expandedLeafId))
-  if (!changed && !selectionChanged) {
+  if (!changed) {
+    const activeLeafId = resolveTerminalLayoutActiveLeafId({
+      root: snapshot.root,
+      activeLeafId: snapshot.activeLeafId,
+      ptyIdsByLeafId: snapshot.ptyIdsByLeafId
+    })
+    const expandedLeafId =
+      snapshot.expandedLeafId && !inputLeafIds.has(snapshot.expandedLeafId)
+        ? null
+        : snapshot.expandedLeafId
+    if (activeLeafId !== snapshot.activeLeafId || expandedLeafId !== snapshot.expandedLeafId) {
+      return { snapshot: { ...snapshot, activeLeafId, expandedLeafId }, changed: true }
+    }
     return { snapshot, changed: false }
   }
   const rewrite: LeafIdRewrite = { nextLeafIdByInputLeafId, duplicatedInputLeafIds }
-  const root = changed ? cloneLayoutWithLeafRewrite(snapshot.root, rewrite) : snapshot.root
+  const root = cloneLayoutWithLeafRewrite(snapshot.root, rewrite)
   // Why: split panes can be restored after a leaf was closed elsewhere; stale
   // selection ids must not strand focus on a missing pane.
-  const activeLeafId = getRemappedLeafId(snapshot.activeLeafId, rewrite) ?? firstLeafId(root)
+  const remappedActiveLeafId = getRemappedLeafId(snapshot.activeLeafId, rewrite) ?? firstLeafId(root)
   const expandedLeafId = getRemappedLeafId(snapshot.expandedLeafId, rewrite)
   const ptyIdsByLeafId = remapLeafRecord(snapshot.ptyIdsByLeafId, rewrite)
   const buffersByLeafId = remapLeafRecord(snapshot.buffersByLeafId, rewrite)
@@ -134,7 +187,11 @@ export function normalizeTerminalLayoutSnapshot(
     snapshot: {
       ...snapshotWithoutLeafRecords,
       root,
-      activeLeafId,
+      activeLeafId: resolveTerminalLayoutActiveLeafId({
+        root,
+        activeLeafId: remappedActiveLeafId,
+        ptyIdsByLeafId
+      }),
       expandedLeafId,
       ...(ptyIdsByLeafId ? { ptyIdsByLeafId } : {}),
       ...(buffersByLeafId ? { buffersByLeafId } : {}),
@@ -153,37 +210,6 @@ export function collectLeafIdsInOrder(node: TerminalPaneLayoutNode | null | unde
     return [node.leafId]
   }
   return [...collectLeafIdsInOrder(node.first), ...collectLeafIdsInOrder(node.second)]
-}
-
-export function resolvePtyBoundActiveLeafId(args: {
-  root: TerminalPaneLayoutNode | null | undefined
-  activeLeafId: string | null | undefined
-  ptyIdsByLeafId: Record<string, string> | null | undefined
-}): string | null {
-  const leafIds = collectLeafIdsInOrder(args.root)
-  const leafIdSet = new Set(leafIds)
-  const ptyIdsByLeafId = args.ptyIdsByLeafId ?? {}
-  if (
-    args.activeLeafId &&
-    ptyIdsByLeafId[args.activeLeafId] &&
-    (leafIds.length === 0 || leafIdSet.has(args.activeLeafId))
-  ) {
-    return args.activeLeafId
-  }
-
-  const firstBoundLeafId = leafIds.find((leafId) => ptyIdsByLeafId[leafId])
-  if (firstBoundLeafId) {
-    return firstBoundLeafId
-  }
-
-  if (leafIds.length === 0) {
-    return Object.keys(ptyIdsByLeafId)[0] ?? args.activeLeafId ?? null
-  }
-
-  if (args.activeLeafId && leafIdSet.has(args.activeLeafId)) {
-    return args.activeLeafId
-  }
-  return leafIds[0] ?? null
 }
 
 export function getLeftmostLeafId(node: TerminalPaneLayoutNode): string {

@@ -42,6 +42,7 @@ import {
   replayTerminalLayout,
   restoreScrollbackBuffers
 } from './layout-serialization'
+import { resolveTerminalLayoutActiveLeafId } from './terminal-layout-leaf-ids'
 import { makePaneKey } from '../../../../shared/stable-pane-id'
 import { applyExpandedLayoutTo, restoreExpandedLayoutFrom } from './expand-collapse'
 import {
@@ -53,9 +54,11 @@ import { handleOsc52ClipboardRequest } from './osc52-clipboard'
 import { showOsc52ClipboardBlockedToast } from './osc52-clipboard-blocked-toast'
 import { parseOsc7 } from './parse-osc7'
 import { resolveTerminalJisYenInput } from './terminal-jis-yen-input'
+import { installTerminalImeCompositionTracker } from './terminal-ime-composition-tracker'
 import {
   shouldBypassXtermKeyboardEvent,
   shouldHandleTerminalInterruptKeyboardEvent,
+  shouldSuppressTerminalImeKeyboardEvent,
   shouldSuppressTerminalInterruptKeyup,
   shouldSuppressTerminalModifierKeyboardEvent,
   TERMINAL_INTERRUPT_INPUT
@@ -203,7 +206,7 @@ type UseTerminalPaneLifecycleDeps = {
   }) => void
   setCacheTimerStartedAt: (key: string, ts: number | null) => void
   syncPanePtyLayoutBinding: (paneId: number, ptyId: string | null) => void
-  clearExitedPanePtyLayoutBinding: (paneId: number) => void
+  clearExitedPanePtyLayoutBinding: (paneId: number, exitedPtyId: string) => void
   setTabPaneExpanded: (tabId: string, expanded: boolean) => void
   setTabCanExpandPane: (tabId: string, canExpand: boolean) => void
   setExpandedPane: (paneId: number | null) => void
@@ -428,6 +431,7 @@ export function useTerminalPaneLifecycle({
   const osc52DisposablesRef = useRef(new Map<number, IDisposable>())
   const osc7DisposablesRef = useRef(new Map<number, IDisposable>())
   const mouseHideDisposablesRef = useRef(new Map<number, IDisposable>())
+  const imeCompositionDisposablesRef = useRef(new Map<number, IDisposable>())
 
   const applyAppearance = (manager: PaneManager): void => {
     const currentSettings = settingsRef.current
@@ -493,6 +497,7 @@ export function useTerminalPaneLifecycle({
     const selectionDisposables = selectionDisposablesRef.current
     const selectionCaptureTimers = selectionCaptureTimersRef.current
     const mouseHideDisposables = mouseHideDisposablesRef.current
+    const imeCompositionDisposables = imeCompositionDisposablesRef.current
     const worktreePath =
       useAppStore
         .getState()
@@ -683,8 +688,17 @@ export function useTerminalPaneLifecycle({
         // encoder runs, letting the browser and Electron paths fire normally.
         // See xterm-bypass-policy.ts for the rule derivation.
         let pendingTerminalInterruptKeyup = false
+        const imeCompositionTracker = installTerminalImeCompositionTracker(pane.terminal.element)
+        imeCompositionDisposablesRef.current.set(pane.id, imeCompositionTracker)
         pane.terminal.attachCustomKeyEventHandler((e) => {
           const isMac = navigator.userAgent.includes('Mac')
+          if (
+            shouldSuppressTerminalImeKeyboardEvent(e, {
+              compositionActive: imeCompositionTracker.isActive()
+            })
+          ) {
+            return false
+          }
           if (pendingTerminalInterruptKeyup && shouldSuppressTerminalInterruptKeyup(e)) {
             pendingTerminalInterruptKeyup = false
             return false
@@ -917,6 +931,11 @@ export function useTerminalPaneLifecycle({
           selectionDisposable.dispose()
           selectionDisposablesRef.current.delete(paneId)
         }
+        const imeCompositionDisposable = imeCompositionDisposablesRef.current.get(paneId)
+        if (imeCompositionDisposable) {
+          imeCompositionDisposable.dispose()
+          imeCompositionDisposablesRef.current.delete(paneId)
+        }
         const selectionCaptureTimer = selectionCaptureTimersRef.current.get(paneId)
         if (selectionCaptureTimer !== undefined) {
           window.clearTimeout(selectionCaptureTimer)
@@ -1022,6 +1041,24 @@ export function useTerminalPaneLifecycle({
         scheduleRuntimeGraphSync()
       },
       onActivePaneChange: (pane) => {
+        const layout = useAppStore.getState().terminalLayoutsByTabId[tabId]
+        const ptyIdsByLeafId = layout?.ptyIdsByLeafId ?? {}
+        if (Object.keys(ptyIdsByLeafId).length > 0 && !ptyIdsByLeafId[pane.leafId]) {
+          const fallbackLeafId = resolveTerminalLayoutActiveLeafId({
+            root: layout?.root,
+            activeLeafId: pane.leafId,
+            ptyIdsByLeafId
+          })
+          const fallbackPaneId = fallbackLeafId
+            ? (managerRef.current?.getNumericIdForLeaf(fallbackLeafId) ?? null)
+            : null
+          if (fallbackPaneId != null && fallbackPaneId !== pane.id) {
+            // Why: a pane whose PTY exited can remain visible; do not let a
+            // click park focus on a leaf that will swallow keyboard input.
+            managerRef.current?.setActivePane(fallbackPaneId, { focus: true })
+            return
+          }
+        }
         scheduleRuntimeGraphSync()
         if (shouldPersistLayout) {
           persistLayoutSnapshot()
@@ -1379,6 +1416,10 @@ export function useTerminalPaneLifecycle({
         disposable.dispose()
       }
       mouseHideDisposables.clear()
+      for (const disposable of imeCompositionDisposables.values()) {
+        disposable.dispose()
+      }
+      imeCompositionDisposables.clear()
       for (const transport of paneTransports.values()) {
         const ptyId = transport.getPtyId()
         if (

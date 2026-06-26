@@ -19,6 +19,7 @@ import TerminalSearch from '@/components/TerminalSearch'
 import type { PtyTransport } from './pty-transport'
 import { fitPanes, isWindowsUserAgent } from './pane-helpers'
 import { getConnectionId } from '@/lib/connection-context'
+import { getRuntimeEnvironmentIdForWorktree } from '@/lib/worktree-runtime-owner'
 import { handleInternalTerminalFileDrop } from './terminal-drop-handler'
 import { recordTerminalUserInputForLeaf } from './terminal-input-activity'
 import { EMPTY_LAYOUT, serializeTerminalLayout } from './layout-serialization'
@@ -58,6 +59,7 @@ import { useTerminalPaneContextMenu } from './use-terminal-pane-context-menu'
 import type { PreparedAgentSessionFork } from './terminal-agent-session-fork'
 import { useNotificationDispatch } from './use-notification-dispatch'
 import { connectPanePty } from './pty-connection'
+import { resolveTerminalLayoutActiveLeafId } from './terminal-layout-leaf-ids'
 import { shouldPreserveTerminalScrollbackBuffers } from '../../../../shared/workspace-session-terminal-buffers'
 import {
   getAllOverrides,
@@ -73,7 +75,6 @@ import {
 import { resolvePaneKeyForManager } from '@/lib/pane-manager/pane-key-resolution'
 import { safeFit } from '@/lib/pane-manager/pane-tree-ops'
 import { captureTerminalShutdownLayout } from './terminal-shutdown-layout-capture'
-import { resolvePtyBoundActiveLeafId } from './terminal-layout-leaf-ids'
 import {
   inspectRuntimeTerminalProcess,
   isRemoteRuntimePtyId
@@ -724,6 +725,11 @@ export default function TerminalPane({
     if (Object.keys(mergedPtyIds).length > 0) {
       layout.ptyIdsByLeafId = mergedPtyIds
     }
+    layout.activeLeafId = resolveTerminalLayoutActiveLeafId({
+      root: layout.root,
+      activeLeafId: layout.activeLeafId,
+      ptyIdsByLeafId: mergedPtyIds
+    })
     // Preserve pane titles — uses the live React state (via ref) rather than
     // the stale Zustand value because React state reflects in-flight title
     // edits that haven't been persisted yet.
@@ -864,7 +870,7 @@ export default function TerminalPane({
         // Why: an active pane that lost its PTY would keep swallowing input if
         // sibling bound panes are available; replacement/restart bookkeeping
         // opts out so focus stays with the pane about to receive a fresh PTY.
-        nextLayout.activeLeafId = resolvePtyBoundActiveLeafId({
+        nextLayout.activeLeafId = resolveTerminalLayoutActiveLeafId({
           root: nextLayout.root,
           activeLeafId: nextLayout.activeLeafId,
           ptyIdsByLeafId: nextBindings
@@ -883,10 +889,31 @@ export default function TerminalPane({
   )
 
   const clearExitedPanePtyLayoutBinding = useCallback(
-    (paneId: number): void => {
-      writePanePtyLayoutBinding(paneId, null, true)
+    (paneId: number, exitedPtyId: string): void => {
+      const existingLayout = useAppStore.getState().terminalLayoutsByTabId[tabId] ?? EMPTY_LAYOUT
+      const { ptyIdsByLeafId: _existingPtyIdsByLeafId, ...layoutWithoutPtyBindings } =
+        existingLayout
+      const existingBindings = existingLayout.ptyIdsByLeafId ?? {}
+      const leafId = managerRef.current?.getLeafId(paneId)
+      if (!leafId || existingBindings[leafId] !== exitedPtyId) {
+        return
+      }
+
+      const nextBindings = { ...existingBindings }
+      delete nextBindings[leafId]
+      // Why: a focused pane that lost its PTY can swallow input while a live
+      // sibling still exists, so unexpected exits repair focus to a bound leaf.
+      setTabLayout(tabId, {
+        ...layoutWithoutPtyBindings,
+        activeLeafId: resolveTerminalLayoutActiveLeafId({
+          root: existingLayout.root,
+          activeLeafId: existingLayout.activeLeafId,
+          ptyIdsByLeafId: nextBindings
+        }),
+        ...(Object.keys(nextBindings).length > 0 ? { ptyIdsByLeafId: nextBindings } : {})
+      })
     },
-    [writePanePtyLayoutBinding]
+    [setTabLayout, tabId]
   )
 
   const {
@@ -1305,6 +1332,7 @@ export default function TerminalPane({
       setCacheTimerStartedAt,
       setRuntimePaneTitle,
       suppressPtyExit,
+      clearExitedPanePtyLayoutBinding,
       syncPanePtyLayoutBinding,
       tabId,
       updateTabPtyId,
@@ -1632,11 +1660,16 @@ export default function TerminalPane({
       source: Extract<TerminalPasteSource, 'keyboard' | 'paste-event'>
     ): void => {
       const connectionId = getConnectionId(worktreeId) ?? null
+      const runtimeEnvironmentId = getRuntimeEnvironmentIdForWorktree(
+        useAppStore.getState(),
+        worktreeId
+      )
       const activeElementAtDispatch = document.activeElement
       void pasteTerminalClipboard({
         readClipboardText: window.api.ui.readClipboardText,
         saveClipboardImageAsTempFile: window.api.ui.saveClipboardImageAsTempFile,
         connectionId,
+        runtimeEnvironmentId,
         forceBracketedMultilineTextPaste,
         pasteText: (text, options) =>
           executePanePasteText(pane, source, activeElementAtDispatch, text, options),
@@ -1757,10 +1790,15 @@ export default function TerminalPane({
         return
       }
       const connectionId = getConnectionId(worktreeId) ?? null
+      const runtimeEnvironmentId = getRuntimeEnvironmentIdForWorktree(
+        useAppStore.getState(),
+        worktreeId
+      )
       void pasteTerminalClipboard({
         readClipboardText: window.api.ui.readClipboardText,
         saveClipboardImageAsTempFile: window.api.ui.saveClipboardImageAsTempFile,
         connectionId,
+        runtimeEnvironmentId,
         forceBracketedMultilineTextPaste,
         pasteText: (text, options) =>
           executePanePasteText(pane, 'app-menu', activeElementAtDispatch, text, options),
